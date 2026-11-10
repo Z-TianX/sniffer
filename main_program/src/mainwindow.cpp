@@ -142,20 +142,21 @@ void MainWindow::enableAutoDemo(bool on, const QString& bpfFilter, const QString
         if (!displayFilter.isEmpty())
             m_displayEdit->setText(displayFilter);
     });
-    // 12s 后自动选中第一个带载荷的 TCP 报文（展示协议树 + 十六进制视图）
+    // 12s 后自动选中报文：优先 HTTP 明文，其次任意带载荷 TCP（展示协议树 + 十六进制视图）
     QTimer::singleShot(12000, this, [this] {
+        int firstTcpPayload = -1;
         for (int i = 0; i < m_packets.size(); ++i) {
-            if (m_packets[i].hasTcp && !m_packets[i].appPayload.isEmpty()) {
+            if (!m_packets[i].hasTcp || m_packets[i].appPayload.isEmpty())
+                continue;
+            if (firstTcpPayload < 0)
+                firstTcpPayload = i;
+            if (m_packets[i].appProto == AppProto::HTTP) {
                 m_table->selectRow(i);
                 return;
             }
         }
-        for (int i = 0; i < m_packets.size(); ++i) {
-            if (m_packets[i].hasTcp) {
-                m_table->selectRow(i);
-                return;
-            }
-        }
+        if (firstTcpPayload >= 0)
+            m_table->selectRow(firstTcpPayload);
     });
     // 16s 后自动弹出 Follow TCP Stream 窗口
     QTimer::singleShot(16000, this, [this] { onFollowStream(); });

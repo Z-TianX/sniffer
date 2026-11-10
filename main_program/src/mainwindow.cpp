@@ -45,6 +45,7 @@ QString ipProtoName(quint8 p)
     case 2:  return QStringLiteral("IGMP (2)");
     case 6:  return QStringLiteral("TCP (6)");
     case 17: return QStringLiteral("UDP (17)");
+    case 58: return QStringLiteral("ICMPv6 (58)");
     default: return QString::number(p);
     }
 }
@@ -404,8 +405,19 @@ void MainWindow::buildTree(const PacketInfo& pkt)
     child(eth, QStringLiteral("源 MAC"), pkt.srcMac);
     child(eth, QStringLiteral("类型"), etherTypeName(pkt.etherType));
 
+    // ---- IPv6 ----
+    if (pkt.hasIp && pkt.ipVersion == 6) {
+        auto* ip = new QTreeWidgetItem(m_tree, {QStringLiteral("Internet Protocol Version 6"),
+            QStringLiteral("%1 -> %2").arg(pkt.srcIp, pkt.dstIp)});
+        child(ip, QStringLiteral("版本"), QString::number(pkt.ipVersion));
+        child(ip, QStringLiteral("载荷长度"), QStringLiteral("%1 字节").arg(pkt.ipTotalLen - 40));
+        child(ip, QStringLiteral("下一头部"), ipProtoName(pkt.ipProto));
+        child(ip, QStringLiteral("Hop Limit"), QString::number(pkt.ttl));
+        child(ip, QStringLiteral("源 IP"), pkt.srcIp);
+        child(ip, QStringLiteral("目的 IP"), pkt.dstIp);
+    }
     // ---- IPv4 ----
-    if (pkt.hasIp) {
+    else if (pkt.hasIp) {
         auto* ip = new QTreeWidgetItem(m_tree, {QStringLiteral("Internet Protocol Version 4"),
             QStringLiteral("%1 -> %2").arg(pkt.srcIp, pkt.dstIp)});
         child(ip, QStringLiteral("版本"), QString::number(pkt.ipVersion));

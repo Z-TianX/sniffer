@@ -32,6 +32,34 @@ static QString ipToString(const unsigned char* p)
     return QString("%1.%2.%3.%4").arg(p[0]).arg(p[1]).arg(p[2]).arg(p[3]);
 }
 
+// IPv6 地址：RFC 5952 压缩写法（最长连续全零段（≥2 组）缩为 ::）
+static QString ipv6ToString(const unsigned char* p)
+{
+    quint16 g[8];
+    for (int i = 0; i < 8; ++i)
+        g[i] = quint16((quint16(p[2 * i]) << 8) | p[2 * i + 1]);
+
+    int bestStart = -1, bestLen = 0;
+    for (int i = 0, s = -1, l = 0; i < 8; ++i) {
+        if (g[i] == 0) { if (s < 0) s = i; ++l; if (l > bestLen) { bestLen = l; bestStart = s; } }
+        else { s = -1; l = 0; }
+    }
+
+    QStringList parts;
+    if (bestLen >= 2 && bestStart == 0)
+        parts.append(QString());                 // "::" 开头
+    for (int i = 0; i < 8; ++i) {
+        if (bestLen >= 2 && i >= bestStart && i < bestStart + bestLen)
+            continue;                            // 被压缩的全零段
+        parts.append(QString::number(g[i], 16));
+        if (bestLen >= 2 && i + 1 == bestStart)
+            parts.append(QString());             // 中间的 "::"
+    }
+    if (bestLen >= 2 && bestStart + bestLen == 8)
+        parts.append(QString());                 // "::" 结尾
+    return parts.join(QLatin1Char(':'));
+}
+
 // ------------------------------------------------------------------
 // 主解析函数：Frame → Ethernet → IPv4(IHL) → TCP/UDP/ICMP → 应用层
 // ------------------------------------------------------------------
@@ -71,37 +99,61 @@ void Parser::parse(const unsigned char* d, int len, PacketInfo& pkt)
         return;
     }
 
-    // IPv6：本实验只对 IPv4 做详细解析
+    // IPv6：40 字节定长头 + 扩展头跳过，随后与 IPv4 共用 TCP/UDP/ICMP 解析逻辑
+    int pl = 0;                 // 传输层偏移
+    int ipPayloadLen = 0;       // 传输层载荷长度
     if (etherType == 0x86DD) {
-        pkt.transport = TransportType::Other;
+        if (off + 40 > len || (d[off] >> 4) != 6)
+            return;
+        pkt.hasIp     = true;
+        pkt.ipVersion = 6;
+        pkt.ipIhl     = 40;                          // IPv6 固定头 40 字节
+        pkt.ipTotalLen = 40 + readU16(d + off + 4);  // 载荷长度字段
+        pkt.ttl       = d[off + 7];                  // Hop Limit
+        pkt.ipProto   = d[off + 6];                  // Next Header
+        pkt.srcIp     = ipv6ToString(d + off + 8);
+        pkt.dstIp     = ipv6ToString(d + off + 24);
+
+        // 跳过扩展头：Hop-by-Hop(0)/Routing(43)/Fragment(44)/DestOpts(60)
+        // 每个扩展头首字节是下一头部类型，第二字节是长度字段（单位 8 字节，不含前 8 字节）
+        quint8 nh = d[off + 6];
+        int ext = off + 40;
+        while (nh == 0 || nh == 43 || nh == 44 || nh == 60) {
+            if (ext + 8 > len)
+                return;
+            const int extLen = (nh == 44) ? 8 : (d[ext + 1] + 1) * 8;
+            nh = d[ext];
+            ext += extLen;
+        }
+        pkt.ipProto = nh;
+        pl = ext;
+        ipPayloadLen = qMax(0, qMin<int>(pkt.ipTotalLen, len - off) - 40);
+    }
+    // ================= IPv4 头（处理 IHL 可变头部） =================
+    else if (etherType == 0x0800 && off + 20 <= len && (d[off] >> 4) == 4) {
+        pkt.hasIp = true;
+        pkt.ipVersion = d[off] >> 4;
+        pkt.ipIhl = (d[off] & 0x0F) * 4;              // IHL 可变头部，禁止写死 20 字节
+        if (pkt.ipIhl < 20 || off + pkt.ipIhl > len)
+            return;
+
+        pkt.ipTotalLen = readU16(d + off + 2);
+        pkt.ipId       = readU16(d + off + 4);
+        pkt.ttl        = d[off + 8];
+        pkt.ipProto    = d[off + 9];
+        pkt.ipChecksum = readU16(d + off + 10);
+        pkt.srcIp      = ipToString(d + off + 12);
+        pkt.dstIp      = ipToString(d + off + 16);
+
+        pl = off + pkt.ipIhl;               // 传输层偏移
+        ipPayloadLen = (pkt.ipTotalLen > 0)
+            ? int(qMin<quint32>(pkt.ipTotalLen, quint32(len - off))) - pkt.ipIhl
+            : len - pl;
+        ipPayloadLen = qMax(0, ipPayloadLen);
+    }
+    else {
         return;
     }
-
-    // ================= IPv4 头（处理 IHL 可变头部） =================
-    if (etherType != 0x0800 || off + 20 > len)
-        return;
-    if ((d[off] >> 4) != 4)
-        return;
-
-    pkt.hasIp = true;
-    pkt.ipVersion = d[off] >> 4;
-    pkt.ipIhl = (d[off] & 0x0F) * 4;              // IHL 可变头部，禁止写死 20 字节
-    if (pkt.ipIhl < 20 || off + pkt.ipIhl > len)
-        return;
-
-    pkt.ipTotalLen = readU16(d + off + 2);
-    pkt.ipId       = readU16(d + off + 4);
-    pkt.ttl        = d[off + 8];
-    pkt.ipProto    = d[off + 9];
-    pkt.ipChecksum = readU16(d + off + 10);
-    pkt.srcIp      = ipToString(d + off + 12);
-    pkt.dstIp      = ipToString(d + off + 16);
-
-    const int pl = off + pkt.ipIhl;               // 传输层偏移
-    int ipPayloadLen = (pkt.ipTotalLen > 0)
-        ? int(qMin<quint32>(pkt.ipTotalLen, quint32(len - off))) - pkt.ipIhl
-        : len - pl;
-    ipPayloadLen = qMax(0, ipPayloadLen);
 
     // ================= TCP 头（处理可变头部） =================
     if (pkt.ipProto == 6 && pl + 20 <= len) {
@@ -148,16 +200,19 @@ void Parser::parse(const unsigned char* d, int len, PacketInfo& pkt)
             pkt.appPayload = QByteArray(reinterpret_cast<const char*>(d + appOff), pkt.appPayloadLen);
         }
     }
-    // ================= ICMP 头（ping 报文解析） =================
-    else if (pkt.ipProto == 1 && pl + 4 <= len) {
+    // ================= ICMP / ICMPv6 头（ping 报文解析） =================
+    else if ((pkt.ipProto == 1 || pkt.ipProto == 58) && pl + 4 <= len) {
         pkt.hasIcmp = true;
         pkt.transport = TransportType::ICMP;
         pkt.icmpType = d[pl];
         pkt.icmpCode = d[pl + 1];
-        if (pkt.icmpType == 8 || pkt.icmpType == 0) {
+        const bool v4Echo = (pkt.icmpType == 8 || pkt.icmpType == 0);
+        const bool v6Echo = (pkt.icmpType == 128 || pkt.icmpType == 129);
+        if (v4Echo || v6Echo) {
             const quint16 ident = readU16(d + pl + 4);
             const quint16 seqn  = readU16(d + pl + 6);
-            pkt.summaryExtra = (pkt.icmpType == 8)
+            const bool isReq = (pkt.icmpType == 8 || pkt.icmpType == 128);
+            pkt.summaryExtra = isReq
                 ? QString("Echo (ping) request  id=0x%1 seq=%2").arg(ident, 4, 16, QChar('0')).arg(seqn)
                 : QString("Echo (ping) reply    id=0x%1 seq=%2").arg(ident, 4, 16, QChar('0')).arg(seqn);
         }

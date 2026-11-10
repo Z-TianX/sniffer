@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)
-project(NetSniffer LANGUAGES CXX)
+project(NetSniffer LANGUAGES CXX RC)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -34,7 +34,7 @@ add_executable(NetSniffer WIN32
     src/tcpstreamtable.h src/tcpstreamtable.cpp
     src/streamdialog.h   src/streamdialog.cpp
     src/mainwindow.h     src/mainwindow.cpp
-    app.manifest
+    app.rc
 )
 
 target_include_directories(NetSniffer PRIVATE "${NPCAP_SDK}/Include")
@@ -42,7 +42,7 @@ target_link_libraries(NetSniffer PRIVATE
     Qt6::Widgets
     ${NPCAP_WPCAP_LIB}
     ${NPCAP_PACKET_LIB}
-    ws2_32 iphlpapi shell32
+    ws2_32 iphlpapi shell32 advapi32
 )
 
 if(MSVC)

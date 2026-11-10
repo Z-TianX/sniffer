@@ -2,10 +2,13 @@
 #include "packetparser.h"
 #include "streamdialog.h"
 
+#include <QApplication>
 #include <QClipboard>
 #include <QComboBox>
 #include <QCloseEvent>
+#include <QDateTime>
 #include <QFile>
+#include <QFileDialog>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
@@ -15,9 +18,12 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSplitter>
+#include <QStatusBar>
 #include <QTableWidget>
+#include <QTimer>
 #include <QTreeWidget>
 #include <QVBoxLayout>
+#include <windows.h>
 #include <shellapi.h>   // IsUserAnAdmin
 
 namespace {
@@ -60,6 +66,21 @@ QTreeWidgetItem* child(QTreeWidgetItem* parent, const QString& a, const QString&
     return new QTreeWidgetItem(parent, {a, b});
 }
 
+// 判断当前进程是否已提升为管理员（等效 IsUserAnAdmin，且不依赖 shellapi 头文件宏）
+bool isProcessElevated()
+{
+    BOOL elevated = FALSE;
+    HANDLE token = nullptr;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        TOKEN_ELEVATION elev;
+        DWORD cb = sizeof(elev);
+        if (GetTokenInformation(token, TokenElevation, &elev, sizeof(elev), &cb))
+            elevated = elev.TokenIsElevated;
+        CloseHandle(token);
+    }
+    return elevated != FALSE;
+}
+
 } // namespace
 
 MainWindow::MainWindow(QWidget* parent)
@@ -83,10 +104,35 @@ MainWindow::MainWindow(QWidget* parent)
 
     refreshDevices();
 
-    if (!IsUserAnAdmin())
+    if (!isProcessElevated())
         QMessageBox::warning(this, QStringLiteral("权限提示"),
             QStringLiteral("程序未以管理员身份运行，混杂模式开启可能失败、抓不到包！\n"
                            "请右键\"以管理员身份运行\"。"));
+}
+
+void MainWindow::enableAutoDemo(bool on)
+{
+    if (!on)
+        return;
+    // 1s 后自动开始抓包（默认选第一块网卡、不加过滤器）
+    QTimer::singleShot(1000, this, [this] { onStart(); });
+    // 12s 后自动选中第一个带载荷的 TCP 报文（展示协议树 + 十六进制视图）
+    QTimer::singleShot(12000, this, [this] {
+        for (int i = 0; i < m_packets.size(); ++i) {
+            if (m_packets[i].hasTcp && !m_packets[i].appPayload.isEmpty()) {
+                m_table->selectRow(i);
+                return;
+            }
+        }
+        for (int i = 0; i < m_packets.size(); ++i) {
+            if (m_packets[i].hasTcp) {
+                m_table->selectRow(i);
+                return;
+            }
+        }
+    });
+    // 16s 后自动弹出 Follow TCP Stream 窗口
+    QTimer::singleShot(16000, this, [this] { onFollowStream(); });
 }
 
 void MainWindow::setupUi()
@@ -147,7 +193,7 @@ void MainWindow::setupUi()
     m_table->horizontalHeader()->setSectionResizeMode(6, QHeaderView::ResizeToContents);
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_table->setSingleSelection(true);
+    m_table->setSelectionMode(QAbstractItemView::SingleSelection);
     m_table->setSortingEnabled(false);
     m_table->verticalHeader()->setVisible(false);
     m_table->setContextMenuPolicy(Qt::CustomContextMenu);

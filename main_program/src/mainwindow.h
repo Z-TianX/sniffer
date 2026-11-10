@@ -21,6 +21,9 @@ class MainWindow : public QMainWindow
 public:
     explicit MainWindow(QWidget* parent = nullptr);
 
+    // 自动演示模式（用于录屏/截图）：自动开始抓包→自动选中首个 TCP 载荷报文→自动弹出 Follow TCP Stream
+    void enableAutoDemo(bool on);
+
 protected:
     void closeEvent(QCloseEvent* e) override;
 

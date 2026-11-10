@@ -1,4 +1,5 @@
 #include "packetinfo.h"
+#include <QStringList>
 
 QString PacketInfo::protocolName() const
 {

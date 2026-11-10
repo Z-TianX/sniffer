@@ -1,0 +1,2 @@
+// Windows 资源文件：把 app.manifest（requireAdministrator）嵌入 exe（MinGW 下 windres 编译）
+1 24 "app.manifest"

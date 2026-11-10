@@ -5,7 +5,9 @@
 #include <windows.h>
 #include <iphlpapi.h>
 
+#ifdef _MSC_VER
 #pragma comment(lib, "iphlpapi.lib")
+#endif
 
 ProcessMapper::ProcessMapper(QObject* parent)
     : QObject(parent)

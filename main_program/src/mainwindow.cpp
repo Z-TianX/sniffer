@@ -138,7 +138,18 @@ void MainWindow::enableAutoDemo(bool on, const QString& bpfFilter, const QString
             m_bpfEdit->setText(bpfFilter);
         onStart();
     });
-    // 6s 后应用用户态显示过滤器（软件过滤，隐藏不匹配条目）
+    // 显示过滤器：支持 ";" 分隔多个表达式，每 4 秒依次应用（用于演示逻辑演算）
+    const QStringList dfs = displayFilter.split(QLatin1Char(';'), Qt::SkipEmptyParts);
+    if (dfs.size() > 1) {
+        for (int i = 0; i < dfs.size(); ++i) {
+            const QString d = dfs[i].trimmed();
+            QTimer::singleShot(6000 + i * 4000, this, [this, d] {
+                m_displayEdit->setText(d);   // 触发 textChanged → applyDisplayFilter
+            });
+        }
+        return;   // 过滤器演示模式：不做自动选中/自动弹流窗口
+    }
+    // 单个表达式：6s 后应用（软件过滤，隐藏不匹配条目）
     QTimer::singleShot(6000, this, [this, displayFilter] {
         if (!displayFilter.isEmpty())
             m_displayEdit->setText(displayFilter);
@@ -197,8 +208,9 @@ void MainWindow::setupUi()
     row2->addWidget(new QLabel(QStringLiteral("显示过滤器:"), central));
     m_displayEdit = new QLineEdit(central);
     m_displayEdit->setPlaceholderText(
-        QStringLiteral("支持: tcp / udp / icmp / arp / http / dns / tls / "
-                       "ip.addr == x.x.x.x / tcp.port == 80，多条件用 || 连接"));
+        QStringLiteral("支持逻辑演算: tcp && ip.addr == x.x.x.x && tcp.port == 80　"
+                       "取反 !tcp　或 ||　括号 ( )　按进程: tcp && proc == wps / pid == 1234　"
+                       "协议: tcp/udp/ipv4/ipv6/icmp/icmpv6/arp/http/dns/tls/dhcp"));
     row2->addWidget(m_displayEdit, 1);
 
     m_btnStream = new QPushButton(QStringLiteral("Follow TCP Stream"), central);

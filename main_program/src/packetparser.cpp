@@ -1,5 +1,7 @@
 #include "packetparser.h"
 #include <QDateTime>
+#include <QRegularExpression>
+#include <QStringList>
 #include <winsock2.h>
 
 // ------------------------------------------------------------------
@@ -276,13 +278,21 @@ static bool matchProtocol(const PacketInfo& pkt, const QString& kw)
 {
     if (kw == QLatin1String("arp"))   return pkt.etherType == 0x0806;
     if (kw == QLatin1String("ipv6") || kw == QLatin1String("ip6")) return pkt.etherType == 0x86DD;
+    if (kw == QLatin1String("ipv4") || kw == QLatin1String("ip4")) return pkt.etherType == 0x0800;
     if (kw == QLatin1String("ip"))    return pkt.hasIp;
     if (kw == QLatin1String("tcp"))   return pkt.hasTcp;
     if (kw == QLatin1String("udp"))   return pkt.hasUdp;
     if (kw == QLatin1String("icmp"))  return pkt.hasIcmp;
+    if (kw == QLatin1String("icmpv6") || kw == QLatin1String("icmp6"))
+        return pkt.hasIcmp && pkt.ipVersion == 6;
     if (kw == QLatin1String("http"))  return pkt.appProto == AppProto::HTTP;
     if (kw == QLatin1String("dns"))   return pkt.appProto == AppProto::DNS;
-    if (kw == QLatin1String("tls") || kw == QLatin1String("ssl")) return pkt.appProto == AppProto::TLS;
+    if (kw == QLatin1String("tls") || kw == QLatin1String("ssl") || kw == QLatin1String("https"))
+        return pkt.appProto == AppProto::TLS;
+    if (kw == QLatin1String("dhcp"))  return pkt.appProto == AppProto::DHCP;
+    // 进程相关关键字：只显示能映射到本机进程的报文
+    if (kw == QLatin1String("pid"))   return pkt.pid != 0;
+    if (kw == QLatin1String("proc"))  return !pkt.procName.isEmpty();
     return false;
 }
 
@@ -298,45 +308,100 @@ static bool evalCompare(const PacketInfo& pkt, const QString& field, const QStri
     else if (field == QLatin1String("tcp.dstport")) eq = pkt.hasTcp && pkt.dstPort == value.toUShort();
     else if (field == QLatin1String("udp.srcport")) eq = pkt.hasUdp && pkt.srcPort == value.toUShort();
     else if (field == QLatin1String("udp.dstport")) eq = pkt.hasUdp && pkt.dstPort == value.toUShort();
-    else if (field == QLatin1String("tcp.stream-like")) eq = false;
+    // 进程筛选：某进程产生的所有（TCP）流 —— proc == 进程名（子串，忽略大小写）/ pid == 数字
+    else if (field == QLatin1String("pid") || field == QLatin1String("process.pid"))
+        eq = pkt.pid != 0 && pkt.pid == value.toUInt();
+    else if (field == QLatin1String("proc") || field == QLatin1String("process.name"))
+        eq = !pkt.procName.isEmpty() && pkt.procName.toLower().contains(value);
+    else if (field == QLatin1String("frame.len"))
+        eq = pkt.raw.size() == value.toInt();
     return neq ? !eq : eq;
+}
+
+// 在括号之外按逻辑运算符切分（splitOr=true 按 || 切，false 按 && 切）
+static QStringList splitTopLevel(const QString& s, bool splitOr)
+{
+    QStringList out;
+    QString cur;
+    int depth = 0;
+    for (int i = 0; i < s.size(); ++i) {
+        const QChar c = s.at(i);
+        if (c == QLatin1Char('('))      ++depth;
+        else if (c == QLatin1Char(')')) depth = qMax(0, depth - 1);
+
+        if (depth == 0 && i + 1 < s.size()) {
+            const QChar n = s.at(i + 1);
+            if (splitOr && c == QLatin1Char('|') && n == QLatin1Char('|')) {
+                out << cur; cur.clear(); ++i; continue;
+            }
+            if (!splitOr && c == QLatin1Char('&') && n == QLatin1Char('&')) {
+                out << cur; cur.clear(); ++i; continue;
+            }
+        }
+        cur += c;
+    }
+    out << cur;
+    return out;
+}
+
+// 原子表达式：! 取反（可叠加）、( ... ) 分组递归、field ==/!= value、协议关键字
+static bool evalAtom(const PacketInfo& pkt, const QString& raw)
+{
+    QString t = raw.trimmed();
+    if (t.isEmpty())
+        return true;
+
+    bool negate = false;
+    while (t.startsWith(QLatin1Char('!'))) {
+        negate = !negate;
+        t = t.mid(1).trimmed();
+    }
+    if (t.startsWith(QLatin1Char('(')) && t.endsWith(QLatin1Char(')'))) {
+        const bool v = Parser::matchDisplayFilter(pkt, t.mid(1, t.size() - 2));
+        return negate ? !v : v;
+    }
+
+    const QString lower = t.toLower();
+    bool val = false;
+    const int neqPos = lower.indexOf(QLatin1String("!="));
+    const int eqPos  = lower.indexOf(QLatin1String("=="));
+    if (neqPos > 0)
+        val = evalCompare(pkt, lower.left(neqPos).trimmed(), lower.mid(neqPos + 2).trimmed(), true);
+    else if (eqPos > 0)
+        val = evalCompare(pkt, lower.left(eqPos).trimmed(), lower.mid(eqPos + 2).trimmed(), false);
+    else
+        val = matchProtocol(pkt, lower.trimmed());
+    return negate ? !val : val;
 }
 
 bool Parser::matchDisplayFilter(const PacketInfo& pkt, const QString& filter)
 {
-    const QString f = filter.trimmed();
+    QString f = filter.trimmed();
     if (f.isEmpty())
         return true;
 
-    // 多条件用 "||" 逻辑或连接
-    const QStringList terms = f.split(QLatin1String("||"), Qt::SkipEmptyParts);
-    bool any = false;
-    for (QString t0 : terms) {
-        QString t = t0.trimmed();
-        if (t.isEmpty())
-            continue;
-        bool negate = false;
-        if (t.startsWith(QLatin1Char('!'))) {
-            negate = true;
-            t = t.mid(1).trimmed();
-        }
-        t = t.toLower();
+    // 单词逻辑运算符归一化为符号形式（or → ||、and → &&），供后续统一解析
+    static const QRegularExpression orRe(QStringLiteral("\\s+or\\s+"),
+                                         QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression andRe(QStringLiteral("\\s+and\\s+"),
+                                          QRegularExpression::CaseInsensitiveOption);
+    f.replace(orRe, QStringLiteral(" || "));
+    f.replace(andRe, QStringLiteral(" && "));
 
-        bool val = false;
-        const int neqPos = t.indexOf(QLatin1String("!="));
-        const int eqPos  = t.indexOf(QLatin1String("=="));
-        if (neqPos > 0) {
-            val = evalCompare(pkt, t.left(neqPos).trimmed(), t.mid(neqPos + 2).trimmed(), true);
-        } else if (eqPos > 0) {
-            val = evalCompare(pkt, t.left(eqPos).trimmed(), t.mid(eqPos + 2).trimmed(), false);
-        } else {
-            val = matchProtocol(pkt, t.trimmed());
+    // 优先级：! (最高) > && > || (最低)；括号可改变优先级
+    const QStringList orTerms = splitTopLevel(f, true);
+    for (const QString& orTerm : orTerms) {
+        if (orTerm.trimmed().isEmpty())
+            continue;
+        bool all = true;
+        const QStringList andTerms = splitTopLevel(orTerm, false);
+        for (const QString& andTerm : andTerms) {
+            if (andTerm.trimmed().isEmpty())
+                continue;
+            if (!evalAtom(pkt, andTerm)) { all = false; break; }
         }
-        if (negate)
-            val = !val;
-        any = any || val;
-        if (any)
-            break;
+        if (all)
+            return true;
     }
-    return any;
+    return false;
 }

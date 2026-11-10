@@ -6,3 +6,10 @@ unpacked/
 doc_text.txt
 media/
 *.zip
+
+# 本机安装的工具与下载缓存（不属于源码）
+Qt/
+npcap-sdk/
+_dl/
+aqtinstall.log
+~$*.docx

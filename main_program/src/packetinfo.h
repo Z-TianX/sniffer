@@ -2,6 +2,9 @@
 #include <QByteArray>
 #include <QMetaType>
 #include <QString>
+
+// IPv6 地址格式化（RFC 5952 压缩写法）。解析器与进程映射表共用，保证字符串可直接比较。
+QString ipv6ToString(const unsigned char* p);
 #include <QtGlobal>
 
 // 传输层类型

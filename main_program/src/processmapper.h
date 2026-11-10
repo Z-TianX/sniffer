@@ -4,11 +4,11 @@
 #include <QTimer>
 #include <QString>
 
-// 显式加分 2：TCP 流映射本机进程 PID 与进程名
-// Windows API GetTcpTable2() 定时获取系统 TCP 连接表，
-// 构建 (本地IP, 本地端口) → PID 映射哈希；
+// 显式加分 2：TCP/UDP 流映射本机进程 PID 与进程名
+// Windows API 定时获取系统连接表（GetTcpTable2 / GetTcp6Table2 /
+// GetExtendedUdpTable），构建 (本地IP, 本地端口) → PID 映射哈希；
 // 再通过 OpenProcess + QueryFullProcessImageNameW 获取进程 exe 名称。
-// 限制：仅本机 TCP 连接有效，无法获取局域网其他主机的进程信息。
+// 限制：仅本机连接有效，无法获取局域网其他主机的进程信息。
 class ProcessMapper : public QObject
 {
     Q_OBJECT
@@ -30,8 +30,12 @@ public:
 public slots:
     void refresh();
 
+signals:
+    void tableUpdated();   // 连接表刷新完成（供界面回填历史报文的 PID）
+
 private:
     QString nameFor(quint32 pid);
+    quint32 probe(const QString& ip, quint16 port) const;   // 精确 + 通配地址回退
     static QString keyOf(const QString& ip, quint16 port);
 
     QHash<QString, quint32> m_connTable;    // "ip:port" → PID

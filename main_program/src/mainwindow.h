@@ -30,6 +30,7 @@ protected:
 
 private slots:
     void refreshDevices();
+    void backfillProcessInfo();   // 连接表刷新后回填历史报文的 PID/进程名
     void onStart();
     void onStop();
     void onPacket(const PacketInfo& pkt);

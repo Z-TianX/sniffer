@@ -1,6 +1,34 @@
 #include "packetinfo.h"
 #include <QStringList>
 
+// IPv6 地址：RFC 5952 压缩写法（最长连续全零段（≥2 组）缩为 ::）
+QString ipv6ToString(const unsigned char* p)
+{
+    quint16 g[8];
+    for (int i = 0; i < 8; ++i)
+        g[i] = quint16((quint16(p[2 * i]) << 8) | p[2 * i + 1]);
+
+    int bestStart = -1, bestLen = 0;
+    for (int i = 0, s = -1, l = 0; i < 8; ++i) {
+        if (g[i] == 0) { if (s < 0) s = i; ++l; if (l > bestLen) { bestLen = l; bestStart = s; } }
+        else { s = -1; l = 0; }
+    }
+
+    QStringList parts;
+    if (bestLen >= 2 && bestStart == 0)
+        parts.append(QString());                 // "::" 开头
+    for (int i = 0; i < 8; ++i) {
+        if (bestLen >= 2 && i >= bestStart && i < bestStart + bestLen)
+            continue;                            // 被压缩的全零段
+        parts.append(QString::number(g[i], 16));
+        if (bestLen >= 2 && i + 1 == bestStart)
+            parts.append(QString());             // 中间的 "::"
+    }
+    if (bestLen >= 2 && bestStart + bestLen == 8)
+        parts.append(QString());                 // "::" 结尾
+    return parts.join(QLatin1Char(':'));
+}
+
 // 端点显示：IPv6 地址加方括号，避免与端口混淆（RFC 3986 形式 [addr]:port）
 static QString endpoint(const QString& ip, quint16 port)
 {

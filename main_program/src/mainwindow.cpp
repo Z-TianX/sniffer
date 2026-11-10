@@ -90,6 +90,9 @@ MainWindow::MainWindow(QWidget* parent)
     setupUi();
 
     m_processMapper = new ProcessMapper(this);
+    // 连接表每次刷新后回填此前“抓包瞬间还查不到进程”的报文（如 TCP 握手首包）
+    connect(m_processMapper, &ProcessMapper::tableUpdated,
+            this, &MainWindow::backfillProcessInfo);
     m_processMapper->start(2000);
 
     connect(&m_capture, &CaptureThread::packetCaptured,
@@ -319,14 +322,14 @@ void MainWindow::onPacket(const PacketInfo& pIn)
     PacketInfo pkt = pIn;
     pkt.number = ++m_packetCounter;
 
-    // 显式加分 2：TCP 报文映射本机 PID / 进程名
-    if (pkt.hasTcp) {
+    // 显式加分 2：TCP/UDP 报文映射本机 PID / 进程名
+    if (pkt.hasTcp || pkt.hasUdp) {
         const auto r = m_processMapper->lookup(pkt.srcIp, pkt.srcPort, pkt.dstIp, pkt.dstPort);
         pkt.pid = r.pid;
         pkt.procName = r.name;
-        // 显式加分 1：存入 TCP 流会话表
-        m_streams.addSegment(pkt);
     }
+    if (pkt.hasTcp)
+        m_streams.addSegment(pkt);   // 显式加分 1：存入 TCP 流会话表
 
     m_packets.append(pkt);
     addPacketRow(m_packets.size() - 1);
@@ -365,6 +368,41 @@ void MainWindow::addPacketRow(int pktIndex)
     if (!m_displayEdit->text().trimmed().isEmpty() &&
         !Parser::matchDisplayFilter(pkt, m_displayEdit->text()))
         m_table->setRowHidden(row, true);
+}
+
+void MainWindow::backfillProcessInfo()
+{
+    if (m_packets.isEmpty() || m_rowToPacket.isEmpty())
+        return;
+
+    // 建立 报文下标 → 表格行 的反向索引
+    QHash<int, int> pktToRow;
+    pktToRow.reserve(m_rowToPacket.size());
+    for (int row = 0; row < m_rowToPacket.size(); ++row)
+        pktToRow.insert(m_rowToPacket[row], row);
+
+    bool changed = false;
+    for (int i = 0; i < m_packets.size(); ++i) {
+        PacketInfo& pkt = m_packets[i];
+        if (pkt.pid != 0 || (!pkt.hasTcp && !pkt.hasUdp))
+            continue;
+        const auto r = m_processMapper->lookup(pkt.srcIp, pkt.srcPort, pkt.dstIp, pkt.dstPort);
+        if (!r.pid)
+            continue;
+        pkt.pid = r.pid;
+        pkt.procName = r.name;
+        const int row = pktToRow.value(i, -1);
+        if (row >= 0 && m_table->item(row, 6))
+            m_table->item(row, 6)->setText(
+                QStringLiteral("%1 (%2)").arg(r.pid).arg(r.name.isEmpty() ? QStringLiteral("?") : r.name));
+        changed = true;
+    }
+    // 若当前选中的报文刚补上 PID，同步刷新协议树
+    if (changed && currentPacketIndex() >= 0)
+        buildTree(m_packets[currentPacketIndex()]);
+    // 补上 PID 后可能改变显示过滤器（如 "proc" / "pid == n"）的匹配结果，需重新应用
+    if (changed)
+        applyDisplayFilter();
 }
 
 void MainWindow::onCaptureError(const QString& msg)

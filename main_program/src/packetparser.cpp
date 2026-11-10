@@ -34,33 +34,7 @@ static QString ipToString(const unsigned char* p)
     return QString("%1.%2.%3.%4").arg(p[0]).arg(p[1]).arg(p[2]).arg(p[3]);
 }
 
-// IPv6 地址：RFC 5952 压缩写法（最长连续全零段（≥2 组）缩为 ::）
-static QString ipv6ToString(const unsigned char* p)
-{
-    quint16 g[8];
-    for (int i = 0; i < 8; ++i)
-        g[i] = quint16((quint16(p[2 * i]) << 8) | p[2 * i + 1]);
-
-    int bestStart = -1, bestLen = 0;
-    for (int i = 0, s = -1, l = 0; i < 8; ++i) {
-        if (g[i] == 0) { if (s < 0) s = i; ++l; if (l > bestLen) { bestLen = l; bestStart = s; } }
-        else { s = -1; l = 0; }
-    }
-
-    QStringList parts;
-    if (bestLen >= 2 && bestStart == 0)
-        parts.append(QString());                 // "::" 开头
-    for (int i = 0; i < 8; ++i) {
-        if (bestLen >= 2 && i >= bestStart && i < bestStart + bestLen)
-            continue;                            // 被压缩的全零段
-        parts.append(QString::number(g[i], 16));
-        if (bestLen >= 2 && i + 1 == bestStart)
-            parts.append(QString());             // 中间的 "::"
-    }
-    if (bestLen >= 2 && bestStart + bestLen == 8)
-        parts.append(QString());                 // "::" 结尾
-    return parts.join(QLatin1Char(':'));
-}
+// IPv6 地址格式化使用 packetinfo.h 中声明的公共实现 ipv6ToString()
 
 // ------------------------------------------------------------------
 // 主解析函数：Frame → Ethernet → IPv4(IHL) → TCP/UDP/ICMP → 应用层

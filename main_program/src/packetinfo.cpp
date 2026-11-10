@@ -1,14 +1,22 @@
 #include "packetinfo.h"
 #include <QStringList>
 
+// 端点显示：IPv6 地址加方括号，避免与端口混淆（RFC 3986 形式 [addr]:port）
+static QString endpoint(const QString& ip, quint16 port)
+{
+    return ip.contains(QLatin1Char(':'))
+        ? QStringLiteral("[%1]:%2").arg(ip).arg(port)
+        : QStringLiteral("%1:%2").arg(ip).arg(port);
+}
+
 QString PacketInfo::protocolName() const
 {
     if (etherType == 0x0806)
         return QStringLiteral("ARP");
-    if (etherType == 0x86DD)
-        return QStringLiteral("IPv6");
     if (!hasIp)
-        return QStringLiteral("Ethernet");
+        return (etherType == 0x86DD) ? QStringLiteral("IPv6") : QStringLiteral("Ethernet");
+    if (!hasTcp && !hasUdp && !hasIcmp)
+        return (ipVersion == 6) ? QStringLiteral("IPv6") : QStringLiteral("IP");
 
     QString base;
     switch (transport) {
@@ -40,9 +48,9 @@ QString PacketInfo::summary() const
         if (rst)  fl << QStringLiteral("RST");
         if (psh)  fl << QStringLiteral("PSH");
         if (urg)  fl << QStringLiteral("URG");
-        QString s = QStringLiteral("%1:%2 -> %3:%4 [%5] Seq=%6 Win=%7 Len=%8")
-                        .arg(srcIp).arg(srcPort).arg(dstIp).arg(dstPort)
-                        .arg(fl.isEmpty() ? QStringLiteral("-") : fl.join(QLatin1String(", ")))
+        QString s = QStringLiteral("%1 -> %2 [%3] Seq=%4 Win=%5 Len=%6")
+                        .arg(endpoint(srcIp, srcPort), endpoint(dstIp, dstPort),
+                             fl.isEmpty() ? QStringLiteral("-") : fl.join(QLatin1String(", ")))
                         .arg(seq).arg(window).arg(appPayloadLen);
         if (appProto == AppProto::HTTP && !appPayload.isEmpty()) {
             const int eol = appPayload.indexOf("\r\n");
@@ -52,8 +60,9 @@ QString PacketInfo::summary() const
         return s;
     }
     if (hasUdp) {
-        QString s = QStringLiteral("%1:%2 -> %3:%4 Len=%5")
-                        .arg(srcIp).arg(srcPort).arg(dstIp).arg(dstPort).arg(appPayloadLen);
+        QString s = QStringLiteral("%1 -> %2 Len=%3")
+                        .arg(endpoint(srcIp, srcPort), endpoint(dstIp, dstPort))
+                        .arg(appPayloadLen);
         if (appProto == AppProto::DNS && appPayload.size() >= 2) {
             const quint16 dnsId = quint16(quint8(appPayload[0]) << 8) | quint8(appPayload[1]);
             s += QStringLiteral(" DNS id=0x%1").arg(dnsId, 4, 16, QChar('0'));

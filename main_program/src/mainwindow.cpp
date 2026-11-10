@@ -533,8 +533,12 @@ void MainWindow::onFollowStream()
             QStringLiteral("该会话暂无捕获到 TCP 载荷数据"));
         return;
     }
-    const QString title = QStringLiteral("TCP 流: %1:%2 <-> %3:%4")
-                              .arg(pkt.srcIp).arg(pkt.srcPort).arg(pkt.dstIp).arg(pkt.dstPort);
+    auto ep = [](const QString& ip, quint16 port) {
+        return ip.contains(QLatin1Char(':')) ? QStringLiteral("[%1]:%2").arg(ip).arg(port)
+                                             : QStringLiteral("%1:%2").arg(ip).arg(port);
+    };
+    const QString title = QStringLiteral("TCP 流: %1 <-> %2")
+                              .arg(ep(pkt.srcIp, pkt.srcPort), ep(pkt.dstIp, pkt.dstPort));
     StreamDialog dlg(html, title, this);
     dlg.exec();
 }

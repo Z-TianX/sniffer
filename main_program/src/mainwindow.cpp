@@ -110,12 +110,38 @@ MainWindow::MainWindow(QWidget* parent)
                            "请右键\"以管理员身份运行\"。"));
 }
 
-void MainWindow::enableAutoDemo(bool on)
+void MainWindow::enableAutoDemo(bool on, const QString& bpfFilter, const QString& displayFilter)
 {
     if (!on)
         return;
-    // 1s 后自动开始抓包（默认选第一块网卡、不加过滤器）
-    QTimer::singleShot(1000, this, [this] { onStart(); });
+    // 1s 后自动开始抓包：智能挑选真实物理网卡（排除 Loopback/Wi-Fi Direct/虚拟网卡）
+    QTimer::singleShot(1000, this, [this, bpfFilter] {
+        QString err;
+        const auto devs = CaptureThread::enumerateDevices(&err);
+        int best = -1, bestScore = -1000;
+        for (int i = 0; i < devs.size(); ++i) {
+            const QString d = devs[i].second;
+            int score = 0;
+            auto contains = [&d](const char* s) { return d.contains(QLatin1String(s), Qt::CaseInsensitive); };
+            if (contains("Loopback")) score -= 100;
+            if (contains("Wi-Fi Direct") || contains("Monitor")) score -= 100;
+            if (contains("Microsoft")) score -= 50;
+            if (contains("VMware") || contains("Virtual") || contains("TAP")) score -= 30;
+            if (contains("Wireless") || contains("Wi-Fi")) score += 20;
+            if (contains("Ethernet") || contains("以太网")) score += 15;
+            if (score > bestScore) { bestScore = score; best = i; }
+        }
+        if (best >= 0)
+            m_devCombo->setCurrentIndex(best);
+        if (!bpfFilter.isEmpty())
+            m_bpfEdit->setText(bpfFilter);
+        onStart();
+    });
+    // 6s 后应用用户态显示过滤器（软件过滤，隐藏不匹配条目）
+    QTimer::singleShot(6000, this, [this, displayFilter] {
+        if (!displayFilter.isEmpty())
+            m_displayEdit->setText(displayFilter);
+    });
     // 12s 后自动选中第一个带载荷的 TCP 报文（展示协议树 + 十六进制视图）
     QTimer::singleShot(12000, this, [this] {
         for (int i = 0; i < m_packets.size(); ++i) {

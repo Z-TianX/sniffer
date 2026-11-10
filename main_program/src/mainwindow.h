@@ -22,7 +22,8 @@ public:
     explicit MainWindow(QWidget* parent = nullptr);
 
     // 自动演示模式（用于录屏/截图）：自动开始抓包→自动选中首个 TCP 载荷报文→自动弹出 Follow TCP Stream
-    void enableAutoDemo(bool on);
+    void enableAutoDemo(bool on, const QString& bpfFilter = QString(),
+                        const QString& displayFilter = QString());
 
 protected:
     void closeEvent(QCloseEvent* e) override;

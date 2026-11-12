@@ -55,6 +55,7 @@ private:
     void buildTree(const PacketInfo& pkt);
     void showHex(const PacketInfo& pkt);
     void applyDisplayFilter();
+    void selectBestDevice();      // 自动挑选有真实流量的物理网卡（排除 Loopback/WAN Miniport 等虚拟网卡）
     int  currentPacketIndex() const;
 
     QComboBox*      m_devCombo = nullptr;

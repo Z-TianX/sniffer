@@ -125,8 +125,13 @@ void MainWindow::setStartupPreset(const QString& bpfFilter, const QString& displ
     if (!displayFilter.isEmpty())
         m_displayEdit->setText(displayFilter);
 
+    // 必须先选中有真实流量的物理网卡再开始，否则会抓在 "WAN Miniport (Network Monitor)"
+    // 之类的虚拟网卡上，列表永远是空的（表现为“只筛 TCP 没结果”）
     if (autoStart)
-        QTimer::singleShot(600, this, [this] { onStart(); });
+        QTimer::singleShot(600, this, [this] {
+            selectBestDevice();
+            onStart();
+        });
 
     // 自动“按进程筛选”：抓一会儿后在进程下拉框中选中报文数最多的进程
     if (autoByProcess) {
@@ -191,23 +196,7 @@ void MainWindow::enableAutoDemo(bool on, const QString& bpfFilter, const QString
     }
     // 1s 后自动开始抓包：智能挑选真实物理网卡（排除 Loopback/Wi-Fi Direct/虚拟网卡）
     QTimer::singleShot(1000, this, [this, bpfFilter] {
-        QString err;
-        const auto devs = CaptureThread::enumerateDevices(&err);
-        int best = -1, bestScore = -1000;
-        for (int i = 0; i < devs.size(); ++i) {
-            const QString d = devs[i].second;
-            int score = 0;
-            auto contains = [&d](const char* s) { return d.contains(QLatin1String(s), Qt::CaseInsensitive); };
-            if (contains("Loopback")) score -= 100;
-            if (contains("Wi-Fi Direct") || contains("Monitor")) score -= 100;
-            if (contains("Microsoft")) score -= 50;
-            if (contains("VMware") || contains("Virtual") || contains("TAP")) score -= 30;
-            if (contains("Wireless") || contains("Wi-Fi")) score += 20;
-            if (contains("Ethernet") || contains("以太网")) score += 15;
-            if (score > bestScore) { bestScore = score; best = i; }
-        }
-        if (best >= 0)
-            m_devCombo->setCurrentIndex(best);
+        selectBestDevice();
         if (!bpfFilter.isEmpty())
             m_bpfEdit->setText(bpfFilter);
         onStart();
@@ -359,6 +348,7 @@ void MainWindow::refreshDevices()
 {
     QString err;
     const auto devs = CaptureThread::enumerateDevices(&err);
+    const QString prevDesc = m_devCombo->currentText();   // 保留用户此前的选择
     m_devCombo->clear();
     if (devs.isEmpty()) {
         m_status->setText(QStringLiteral("未枚举到网卡: %1").arg(err));
@@ -366,6 +356,38 @@ void MainWindow::refreshDevices()
     }
     for (const auto& dev : devs)
         m_devCombo->addItem(dev.second, dev.first);
+
+    // 枚举顺序第 0 项常是虚拟网卡（WAN Miniport / Loopback），默认必须挑真实物理网卡
+    const int prevIdx = prevDesc.isEmpty() ? -1 : m_devCombo->findText(prevDesc);
+    if (prevIdx >= 0)
+        m_devCombo->setCurrentIndex(prevIdx);
+    else
+        selectBestDevice();
+}
+
+// 智能挑卡：Npcap 枚举出来的第 0 项经常是 "WAN Miniport (Network Monitor)"、
+// "Adapter for loopback traffic capture" 之类的虚拟网卡，抓上去永远没有报文。
+// 这里按名字打分，优先真实无线/有线网卡，虚拟网卡重罚。
+void MainWindow::selectBestDevice()
+{
+    if (!m_devCombo || m_devCombo->count() == 0)
+        return;
+
+    int best = 0, bestScore = -100000;
+    for (int i = 0; i < m_devCombo->count(); ++i) {
+        const QString d = m_devCombo->itemText(i);
+        int score = 0;
+        auto has = [&d](const char* s) { return d.contains(QLatin1String(s), Qt::CaseInsensitive); };
+        if (has("Loopback"))                                      score -= 100;  // Npcap 回环
+        if (has("Wi-Fi Direct") || has("Monitor"))                score -= 100;  // 虚拟直连 / 网络监视器
+        if (has("WAN Miniport") || has("Miniport"))               score -= 120;  // WAN Miniport 系列
+        if (has("Microsoft"))                                     score -= 50;
+        if (has("VMware") || has("Virtual") || has("TAP"))         score -= 30;
+        if (has("Wireless") || has("Wi-Fi"))                      score += 20;
+        if (has("Ethernet") || has("以太网"))                      score += 15;
+        if (score > bestScore) { bestScore = score; best = i; }
+    }
+    m_devCombo->setCurrentIndex(best);
 }
 
 void MainWindow::onStart()

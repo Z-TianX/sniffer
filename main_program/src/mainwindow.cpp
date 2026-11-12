@@ -103,10 +103,12 @@ MainWindow::MainWindow(QWidget* parent)
     connect(&m_capture, &CaptureThread::errorOccurred,
             this, &MainWindow::onCaptureError, Qt::QueuedConnection);
     connect(&m_capture, &CaptureThread::captureStarted, this, [this] {
-        m_status->setText(QStringLiteral("正在抓包（混杂模式）..."));
+        m_capturing = true;
+        updateStatus();
     });
     connect(&m_capture, &CaptureThread::captureStopped, this, [this] {
-        m_status->setText(QStringLiteral("抓包已停止，共捕获 %1 个报文").arg(m_packets.size()));
+        m_capturing = false;
+        updateStatus();
     });
 
     refreshDevices();
@@ -400,6 +402,7 @@ void MainWindow::onStart()
     m_packets.clear();
     m_rowToPacket.clear();
     m_packetCounter = 0;
+    m_visibleRows = 0;
     m_streams.clear();
     m_table->setRowCount(0);
     m_tree->clear();
@@ -439,7 +442,40 @@ void MainWindow::onPacket(const PacketInfo& pIn)
     m_packets.append(pkt);
     addPacketRow(m_packets.size() - 1);
 
-    m_status->setText(QStringLiteral("正在抓包... 已捕获 %1 个报文").arg(m_packets.size()));
+    updateStatus();
+}
+
+// 状态栏：把“抓到了多少”和“界面显示了多少”分开说清楚，
+// 避免 BPF 明明抓到了报文、却被显示过滤器全部隐藏而误以为“没结果”
+void MainWindow::updateStatus()
+{
+    const int total   = m_packets.size();
+    const int visible = m_visibleRows;
+    const QString bpf  = m_bpfEdit->text().trimmed();
+    const QString disp = m_displayEdit->text().trimmed();
+    const QString bpfText = bpf.isEmpty() ? QStringLiteral("无") : bpf;
+
+    if (total > 0 && visible == 0 && !disp.isEmpty()) {
+        m_status->setText(QStringLiteral("⚠ 已捕获 %1 个报文，但显示过滤器 \"%2\" 把它们全部隐藏了"
+                                         "（清空“显示过滤器”即可看到；BPF: %3）")
+                              .arg(total).arg(disp, bpfText));
+        return;
+    }
+    if (total == 0 && !m_capturing) {
+        m_status->setText(QStringLiteral("就绪。BPF: %1 | 显示过滤器: %2")
+                              .arg(bpfText, disp.isEmpty() ? QStringLiteral("无") : disp));
+        return;
+    }
+
+    QString s = m_capturing
+        ? QStringLiteral("正在抓包... 已捕获 %1 个报文，当前显示 %2 个").arg(total).arg(visible)
+        : QStringLiteral("抓包已停止，共捕获 %1 个报文，当前显示 %2 个").arg(total).arg(visible);
+    s += QStringLiteral(" | BPF: %1").arg(bpfText);
+    if (!disp.isEmpty())
+        s += QStringLiteral(" | 显示过滤器: %1").arg(disp);
+    if (m_capturing && total == 0)
+        s += QStringLiteral("（暂未抓到匹配报文：确认流量确实经过当前网卡）");
+    m_status->setText(s);
 }
 
 void MainWindow::addPacketRow(int pktIndex)
@@ -470,9 +506,11 @@ void MainWindow::addPacketRow(int pktIndex)
     m_table->item(row, 0)->setData(Qt::UserRole, pktIndex);
 
     // 显示过滤器生效时，新增行先按软件逻辑过滤（不匹配则隐藏）
-    if (!m_displayEdit->text().trimmed().isEmpty() &&
-        !Parser::matchDisplayFilter(pkt, m_displayEdit->text()))
-        m_table->setRowHidden(row, true);
+    const bool hidden = !m_displayEdit->text().trimmed().isEmpty() &&
+                        !Parser::matchDisplayFilter(pkt, m_displayEdit->text());
+    m_table->setRowHidden(row, hidden);
+    if (!hidden)
+        ++m_visibleRows;
 }
 
 void MainWindow::backfillProcessInfo()
@@ -719,10 +757,15 @@ void MainWindow::applyDisplayFilter()
 {
     // 用户态软件过滤：全部报文仍在内存 vector 中，仅界面隐藏不匹配条目
     const QString filter = m_displayEdit->text();
+    m_visibleRows = 0;
     for (int row = 0; row < m_rowToPacket.size(); ++row) {
         const PacketInfo& pkt = m_packets[m_rowToPacket[row]];
-        m_table->setRowHidden(row, !Parser::matchDisplayFilter(pkt, filter));
+        const bool hidden = !Parser::matchDisplayFilter(pkt, filter);
+        m_table->setRowHidden(row, hidden);
+        if (!hidden)
+            ++m_visibleRows;
     }
+    updateStatus();
 }
 
 void MainWindow::onFollowStream()
@@ -752,6 +795,7 @@ void MainWindow::onClear()
     m_packets.clear();
     m_rowToPacket.clear();
     m_packetCounter = 0;
+    m_visibleRows = 0;
     m_streams.clear();
     m_table->setRowCount(0);
     m_tree->clear();

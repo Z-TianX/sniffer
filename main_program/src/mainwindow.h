@@ -55,6 +55,7 @@ private:
     void buildTree(const PacketInfo& pkt);
     void showHex(const PacketInfo& pkt);
     void applyDisplayFilter();
+    void updateStatus();          // 状态栏：已捕获数 / 当前显示数 / BPF / 显示过滤器
     void selectBestDevice();      // 自动挑选有真实流量的物理网卡（排除 Loopback/WAN Miniport 等虚拟网卡）
     int  currentPacketIndex() const;
 
@@ -77,4 +78,6 @@ private:
     QVector<int>    m_rowToPacket;
     QString         m_procComboSig;   // 进程下拉框内容签名（避免重复重建）
     quint64         m_packetCounter = 0;
+    int             m_visibleRows = 0;  // 当前未被显示过滤器隐藏的行数
+    bool            m_capturing = false;
 };

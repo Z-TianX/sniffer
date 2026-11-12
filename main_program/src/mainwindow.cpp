@@ -7,12 +7,15 @@
 #include <QComboBox>
 #include <QCloseEvent>
 #include <QDateTime>
+#include <QDir>
+#include <QPixmap>
 #include <QFile>
 #include <QFileDialog>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMap>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPlainTextEdit>
@@ -114,10 +117,49 @@ MainWindow::MainWindow(QWidget* parent)
                            "请右键\"以管理员身份运行\"。"));
 }
 
-void MainWindow::enableAutoDemo(bool on, const QString& bpfFilter, const QString& displayFilter)
+void MainWindow::enableAutoDemo(bool on, const QString& bpfFilter, const QString& displayFilter,
+                                const QString& procDemo, const QString& shotsDir)
 {
     if (!on)
         return;
+
+    // 自截图（用于实验报告/验证）：程序自己 grab() 窗口，不受前台窗口遮挡影响
+    if (!shotsDir.isEmpty()) {
+        QDir().mkpath(shotsDir);
+        const QList<int> msList = {8000, 16000};
+        for (int ms : msList) {
+            QTimer::singleShot(ms, this, [this, shotsDir, ms] {
+                const QPixmap pm = grab();
+                pm.save(QStringLiteral("%1/shot_%2ms.png").arg(shotsDir).arg(ms));
+            });
+        }
+    }
+    // 进程筛选演示：14s 后在“进程”下拉框中选中包含该关键字的进程；
+    // 若没有匹配项，则兜底选择报文数最多的进程，保证演示可见
+    if (!procDemo.isEmpty()) {
+        QTimer::singleShot(14000, this, [this, procDemo] {
+            refreshProcessCombo();
+            for (int i = 0; i < m_procCombo->count(); ++i) {
+                if (m_procCombo->itemText(i).contains(procDemo, Qt::CaseInsensitive)) {
+                    m_procCombo->setCurrentIndex(i);   // 触发 onProcessFilterChanged
+                    return;
+                }
+            }
+            // 兜底：统计各 PID 的 TCP 报文数，选最多的那个
+            QHash<quint32, int> cnt;
+            for (const PacketInfo& p : m_packets)
+                if (p.hasTcp && p.pid)
+                    ++cnt[p.pid];
+            quint32 bestPid = 0; int best = 0;
+            for (auto it = cnt.constBegin(); it != cnt.constEnd(); ++it)
+                if (it.value() > best) { best = it.value(); bestPid = it.key(); }
+            if (bestPid) {
+                const int idx = m_procCombo->findData(bestPid);
+                if (idx >= 0)
+                    m_procCombo->setCurrentIndex(idx);
+            }
+        });
+    }
     // 1s 后自动开始抓包：智能挑选真实物理网卡（排除 Loopback/Wi-Fi Direct/虚拟网卡）
     QTimer::singleShot(1000, this, [this, bpfFilter] {
         QString err;
@@ -206,8 +248,17 @@ void MainWindow::setupUi()
     row1->addWidget(m_btnStop);
     rootLayout->addLayout(row1);
 
-    // ---- 第 2 行：显示过滤器 + Follow TCP Stream + 清空 ----
+    // ---- 第 2 行：进程筛选 + 显示过滤器 + Follow TCP Stream + 清空 ----
     auto* row2 = new QHBoxLayout();
+    row2->addWidget(new QLabel(QStringLiteral("进程:"), central));
+    m_procCombo = new QComboBox(central);
+    m_procCombo->setMinimumWidth(240);
+    m_procCombo->setToolTip(QStringLiteral(
+        "选择某个进程 → 自动应用 tcp && pid == <PID>，只看该进程产生/接收的全部 TCP 流\n"
+        "（PID 由 Windows IP Helper 连接表映射得到）"));
+    m_procCombo->addItem(QStringLiteral("全部进程（不过滤）"), quint32(0));
+    row2->addWidget(m_procCombo);
+
     row2->addWidget(new QLabel(QStringLiteral("显示过滤器:"), central));
     m_displayEdit = new QLineEdit(central);
     m_displayEdit->setPlaceholderText(
@@ -267,6 +318,8 @@ void MainWindow::setupUi()
     connect(btnClear,   &QPushButton::clicked, this, &MainWindow::onClear);
     connect(m_btnStream,&QPushButton::clicked, this, &MainWindow::onFollowStream);
     connect(m_displayEdit, &QLineEdit::textChanged, this, &MainWindow::onDisplayFilterChanged);
+    connect(m_procCombo, &QComboBox::currentIndexChanged,
+            this, &MainWindow::onProcessFilterChanged);
     connect(m_table->selectionModel(), &QItemSelectionModel::currentRowChanged,
             this, &MainWindow::onSelectionChanged);
     connect(m_table, &QTableWidget::customContextMenuRequested,
@@ -315,6 +368,7 @@ void MainWindow::onStop()
     m_btnStop->setEnabled(false);
     m_devCombo->setEnabled(true);
     m_bpfEdit->setEnabled(true);
+    refreshProcessCombo();   // 停止后刷新一次进程列表
 }
 
 void MainWindow::onPacket(const PacketInfo& pIn)
@@ -403,6 +457,55 @@ void MainWindow::backfillProcessInfo()
     // 补上 PID 后可能改变显示过滤器（如 "proc" / "pid == n"）的匹配结果，需重新应用
     if (changed)
         applyDisplayFilter();
+    // 同步刷新“进程筛选”下拉框
+    refreshProcessCombo();
+}
+
+void MainWindow::refreshProcessCombo()
+{
+    if (!m_procCombo)
+        return;
+
+    // 收集已捕获报文中出现过的 (PID → 进程名)，按 PID 去重
+    QMap<quint32, QString> procs;
+    for (const PacketInfo& p : m_packets) {
+        if (p.pid == 0)
+            continue;
+        procs.insert(p.pid, p.procName);
+    }
+
+    // 内容签名未变则不重建，避免打断用户操作
+    QString sig;
+    for (auto it = procs.constBegin(); it != procs.constEnd(); ++it)
+        sig += QStringLiteral("%1:%2;").arg(it.key()).arg(it.value());
+    if (sig == m_procComboSig)
+        return;
+    m_procComboSig = sig;
+
+    const quint32 curPid = m_procCombo->currentData().toUInt();
+    m_procCombo->blockSignals(true);
+    m_procCombo->clear();
+    m_procCombo->addItem(QStringLiteral("全部进程（不过滤）"), quint32(0));
+    for (auto it = procs.constBegin(); it != procs.constEnd(); ++it) {
+        const QString name = it.value().isEmpty() ? QStringLiteral("?") : it.value();
+        m_procCombo->addItem(QStringLiteral("%1  (%2)").arg(name).arg(it.key()), it.key());
+    }
+    const int idx = m_procCombo->findData(curPid);
+    m_procCombo->setCurrentIndex(idx >= 0 ? idx : 0);
+    m_procCombo->blockSignals(false);
+}
+
+void MainWindow::onProcessFilterChanged()
+{
+    const quint32 pid = m_procCombo->currentData().toUInt();
+    if (pid == 0) {
+        // “全部进程” → 清空显示过滤器
+        if (!m_displayEdit->text().trimmed().isEmpty())
+            m_displayEdit->clear();
+        return;
+    }
+    // 某进程产生的所有 TCP 流：tcp && pid == N（也可写成 tcp && proc == 进程名）
+    m_displayEdit->setText(QStringLiteral("tcp && pid == %1").arg(pid));
 }
 
 void MainWindow::onCaptureError(const QString& msg)
@@ -602,6 +705,12 @@ void MainWindow::onClear()
     m_table->setRowCount(0);
     m_tree->clear();
     m_hexView->clear();
+    // 重置进程筛选下拉框
+    m_procComboSig.clear();
+    m_procCombo->blockSignals(true);
+    m_procCombo->clear();
+    m_procCombo->addItem(QStringLiteral("全部进程（不过滤）"), quint32(0));
+    m_procCombo->blockSignals(false);
     m_status->setText(QStringLiteral("已清空"));
 }
 
@@ -616,6 +725,19 @@ void MainWindow::showContextMenu(const QPoint& pos)
     QAction* actCopy = menu.addAction(QStringLiteral("复制报文摘要"));
     QAction* actSave = menu.addAction(QStringLiteral("保存原始帧为二进制文件..."));
 
+    // 加分项 2：一键筛选“某进程产生的所有 TCP 流”
+    QAction* actProcTcp = nullptr;
+    QAction* actProcAll = nullptr;
+    QAction* actCopyProc = nullptr;
+    if (m_packets[idx].pid != 0) {
+        menu.addSeparator();
+        const quint32 pid = m_packets[idx].pid;
+        const QString name = m_packets[idx].procName;
+        actProcTcp = menu.addAction(QStringLiteral("只看该进程的 TCP 流：%1 (PID %2)").arg(name).arg(pid));
+        actProcAll = menu.addAction(QStringLiteral("只看该进程的全部报文：%1 (PID %2)").arg(name).arg(pid));
+        actCopyProc = menu.addAction(QStringLiteral("复制进程名"));
+    }
+
     QAction* chosen = menu.exec(m_table->viewport()->mapToGlobal(pos));
     if (!chosen)
         return;
@@ -623,6 +745,18 @@ void MainWindow::showContextMenu(const QPoint& pos)
     const PacketInfo& pkt = m_packets[idx];
     if (chosen == actStream) {
         onFollowStream();
+    } else if (chosen && chosen == actProcTcp) {
+        // 某进程产生的所有 TCP 流
+        m_displayEdit->setText(QStringLiteral("tcp && pid == %1").arg(pkt.pid));
+        m_status->setText(QStringLiteral("已筛选：%1 (PID %2) 的全部 TCP 流")
+                              .arg(pkt.procName).arg(pkt.pid));
+    } else if (chosen && chosen == actProcAll) {
+        m_displayEdit->setText(QStringLiteral("pid == %1").arg(pkt.pid));
+        m_status->setText(QStringLiteral("已筛选：%1 (PID %2) 的全部报文")
+                              .arg(pkt.procName).arg(pkt.pid));
+    } else if (chosen && chosen == actCopyProc) {
+        QApplication::clipboard()->setText(QStringLiteral("%1 (PID %2)")
+                                              .arg(pkt.procName).arg(pkt.pid));
     } else if (chosen == actCopy) {
         QApplication::clipboard()->setText(pkt.summary());
     } else if (chosen == actSave) {

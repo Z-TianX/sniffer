@@ -24,7 +24,9 @@ int main(int argc, char* argv[])
     if (app.arguments().contains(QStringLiteral("--autostart"))) {
         w.enableAutoDemo(true,
                          argValue(app.arguments(), QStringLiteral("--bpf")),
-                         argValue(app.arguments(), QStringLiteral("--display")));
+                         argValue(app.arguments(), QStringLiteral("--display")),
+                         argValue(app.arguments(), QStringLiteral("--procdemo")),
+                         argValue(app.arguments(), QStringLiteral("--shots")));
     }
     w.show();
     return app.exec();

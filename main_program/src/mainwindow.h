@@ -23,7 +23,9 @@ public:
 
     // 自动演示模式（用于录屏/截图）：自动开始抓包→自动选中首个 TCP 载荷报文→自动弹出 Follow TCP Stream
     void enableAutoDemo(bool on, const QString& bpfFilter = QString(),
-                        const QString& displayFilter = QString());
+                        const QString& displayFilter = QString(),
+                        const QString& procDemo = QString(),
+                        const QString& shotsDir = QString());
 
 protected:
     void closeEvent(QCloseEvent* e) override;
@@ -31,6 +33,8 @@ protected:
 private slots:
     void refreshDevices();
     void backfillProcessInfo();   // 连接表刷新后回填历史报文的 PID/进程名
+    void refreshProcessCombo();   // 刷新“进程筛选”下拉框（PID + 进程名）
+    void onProcessFilterChanged();// 下拉框选中 → 生成 tcp && pid == N 表达式
     void onStart();
     void onStop();
     void onPacket(const PacketInfo& pkt);
@@ -50,6 +54,7 @@ private:
     int  currentPacketIndex() const;
 
     QComboBox*      m_devCombo = nullptr;
+    QComboBox*      m_procCombo = nullptr;     // 进程筛选：只看某进程产生的 TCP 流
     QLineEdit*      m_bpfEdit = nullptr;       // 输入框 A：BPF 内核捕获过滤器
     QLineEdit*      m_displayEdit = nullptr;   // 输入框 B：用户态显示过滤器
     QPushButton*    m_btnStart = nullptr;
@@ -65,5 +70,6 @@ private:
     TcpStreamTable  m_streams;
     QVector<PacketInfo> m_packets;    // 全部报文保存在内存，显示过滤仅隐藏界面条目
     QVector<int>    m_rowToPacket;
+    QString         m_procComboSig;   // 进程下拉框内容签名（避免重复重建）
     quint64         m_packetCounter = 0;
 };

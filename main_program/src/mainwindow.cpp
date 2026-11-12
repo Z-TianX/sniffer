@@ -117,6 +117,35 @@ MainWindow::MainWindow(QWidget* parent)
                            "请右键\"以管理员身份运行\"。"));
 }
 
+void MainWindow::setStartupPreset(const QString& bpfFilter, const QString& displayFilter,
+                                  bool autoStart, bool autoByProcess)
+{
+    if (!bpfFilter.isEmpty())
+        m_bpfEdit->setText(bpfFilter);
+    if (!displayFilter.isEmpty())
+        m_displayEdit->setText(displayFilter);
+
+    if (autoStart)
+        QTimer::singleShot(600, this, [this] { onStart(); });
+
+    // 自动“按进程筛选”：抓一会儿后在进程下拉框中选中报文数最多的进程
+    if (autoByProcess) {
+        QTimer::singleShot(8000, this, [this] {
+            refreshProcessCombo();
+            QHash<quint32, int> cnt;
+            for (const PacketInfo& p : m_packets)
+                if (p.hasTcp && p.pid)
+                    ++cnt[p.pid];
+            quint32 bestPid = 0; int best = 0;
+            for (auto it = cnt.constBegin(); it != cnt.constEnd(); ++it)
+                if (it.value() > best) { best = it.value(); bestPid = it.key(); }
+            const int idx = bestPid ? m_procCombo->findData(bestPid) : -1;
+            if (idx >= 0)
+                m_procCombo->setCurrentIndex(idx);
+        });
+    }
+}
+
 void MainWindow::enableAutoDemo(bool on, const QString& bpfFilter, const QString& displayFilter,
                                 const QString& procDemo, const QString& shotsDir)
 {

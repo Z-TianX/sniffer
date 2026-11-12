@@ -27,6 +27,10 @@ public:
                         const QString& procDemo = QString(),
                         const QString& shotsDir = QString());
 
+    // 启动模式预设（由启动器 --launcher 选择）：预填过滤器、可选自动开始抓包、可选自动按进程筛选
+    void setStartupPreset(const QString& bpfFilter, const QString& displayFilter,
+                          bool autoStart, bool autoByProcess);
+
 protected:
     void closeEvent(QCloseEvent* e) override;
 

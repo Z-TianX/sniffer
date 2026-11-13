@@ -13,3 +13,7 @@ npcap-sdk/
 _dl/
 aqtinstall.log
 ~$*.docx
+
+# 实验报告类文档只保留在本地，仓库仅上传源码
+嗅探器.docx
+实验报告/
